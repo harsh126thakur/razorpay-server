@@ -2,11 +2,12 @@ import express from "express";
 import Razorpay from "razorpay";
 import cors from "cors";
 import crypto from "crypto";
+import nodemailer from "nodemailer";
 
 const app = express();
 
 // ================= MIDDLEWARE =================
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 app.use(cors());
 
 // ================= RAZORPAY SETUP =================
@@ -15,16 +16,48 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
+// ================= EMAIL SETUP =================
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT),
+  secure: Number(process.env.SMTP_PORT) === 465,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS
+  }
+});
+
 // ================= TEST ROUTE =================
 app.get("/", (req, res) => {
   res.send("Razorpay Backend Running 🚀");
 });
 
+// ================= EMAIL TEST ROUTE =================
+app.get("/test-email", async (req, res) => {
+  try {
+    await transporter.sendMail({
+      from: process.env.MAIL_FROM,
+      to: process.env.SMTP_USER,
+      subject: "Test Email from DesignTech VLSI",
+      html: `
+        <h2>Test Email Working ✅</h2>
+        <p>This email confirms SMTP is configured correctly on Render.</p>
+      `
+    });
+
+    res.json({ success: true, message: "Test email sent successfully" });
+  } catch (err) {
+    console.error("TEST EMAIL ERROR:", err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
 
 // ================= CREATE ORDER =================
 app.post("/create-order", async (req, res) => {
   try {
-
     const { amount } = req.body;
 
     if (!amount) {
@@ -32,7 +65,7 @@ app.post("/create-order", async (req, res) => {
     }
 
     const options = {
-      amount: amount * 100, // convert to paisa
+      amount: amount * 100,
       currency: "INR",
       receipt: "receipt_" + Date.now()
     };
@@ -40,18 +73,15 @@ app.post("/create-order", async (req, res) => {
     const order = await razorpay.orders.create(options);
 
     res.json(order);
-
   } catch (err) {
     console.error("CREATE ORDER ERROR:", err);
     res.status(500).json({ error: "Order creation failed" });
   }
 });
 
-
 // ================= VERIFY PAYMENT =================
 app.post("/verify-payment", (req, res) => {
   try {
-
     const {
       razorpay_order_id,
       razorpay_payment_id,
@@ -74,13 +104,82 @@ app.post("/verify-payment", (req, res) => {
     } else {
       return res.status(400).json({ success: false });
     }
-
   } catch (err) {
     console.error("VERIFY ERROR:", err);
     res.status(500).json({ success: false });
   }
 });
 
+// ================= SEND INVOICE EMAIL =================
+app.post("/send-invoice", async (req, res) => {
+  try {
+    const {
+      customerEmail,
+      customerName,
+      invoiceNumber,
+      amount,
+      courseName,
+      paymentId
+    } = req.body;
+
+    if (!customerEmail) {
+      return res.status(400).json({
+        success: false,
+        message: "Customer email is required"
+      });
+    }
+
+    await transporter.sendMail({
+      from: process.env.MAIL_FROM,
+      to: customerEmail,
+      subject: `Invoice ${invoiceNumber || ""} - DesignTech VLSI`,
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #222;">
+          <h2>DesignTech VLSI Invoice</h2>
+          <p>Dear ${customerName || "Student"},</p>
+          <p>Thank you for your payment. Your invoice details are below:</p>
+
+          <table style="border-collapse: collapse; width: 100%; max-width: 600px;">
+            <tr>
+              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Invoice Number</strong></td>
+              <td style="border: 1px solid #ddd; padding: 8px;">${invoiceNumber || "-"}</td>
+            </tr>
+            <tr>
+              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Course</strong></td>
+              <td style="border: 1px solid #ddd; padding: 8px;">${courseName || "-"}</td>
+            </tr>
+            <tr>
+              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Amount</strong></td>
+              <td style="border: 1px solid #ddd; padding: 8px;">₹${amount || "-"}</td>
+            </tr>
+            <tr>
+              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Payment ID</strong></td>
+              <td style="border: 1px solid #ddd; padding: 8px;">${paymentId || "-"}</td>
+            </tr>
+          </table>
+
+          <p style="margin-top: 20px;">
+            Regards,<br>
+            <strong>DesignTech VLSI</strong><br>
+            Email: harsh.thakur@designtechvlsi.com
+          </p>
+        </div>
+      `
+    });
+
+    res.json({
+      success: true,
+      message: "Invoice email sent successfully"
+    });
+  } catch (err) {
+    console.error("SEND INVOICE ERROR:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to send invoice email",
+      error: err.message
+    });
+  }
+});
 
 // ================= START SERVER =================
 const PORT = process.env.PORT || 5000;
