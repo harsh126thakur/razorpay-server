@@ -20,6 +20,17 @@ app.get("/", (req, res) => {
   res.send("Razorpay Backend Running 🚀");
 });
 
+// ================= DEBUG ROUTE =================
+app.get("/debug-brevo-key", (req, res) => {
+  const key = process.env.BREVO_API_KEY || "";
+  res.json({
+    hasKey: !!key,
+    keyPrefix: key ? key.substring(0, 10) : null,
+    keyLength: key.length,
+    mailFrom: process.env.MAIL_FROM || null
+  });
+});
+
 // ================= EMAIL TEST ROUTE =================
 app.get("/test-email", async (req, res) => {
   try {
