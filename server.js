@@ -16,19 +16,19 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// ================= GMAIL SETUP =================
+// ================= GOOGLE WORKSPACE SMTP RELAY =================
 const mailTransporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
+  host: "smtp-relay.gmail.com",
   port: 587,
   secure: false,
+  requireTLS: true,
   auth: {
     user: process.env.GMAIL_USER,
     pass: process.env.GMAIL_APP_PASSWORD
   },
   connectionTimeout: 20000,
   greetingTimeout: 20000,
-  socketTimeout: 30000,
-  requireTLS: true
+  socketTimeout: 30000
 });
 
 // ================= TEST ROUTE =================
@@ -65,7 +65,7 @@ app.get("/test-email", async (req, res) => {
       subject: "Test Email from DesignTech VLSI",
       html: `
         <h2>Test Email Working ✅</h2>
-        <p>This email confirms Gmail SMTP is configured correctly on Render.</p>
+        <p>This email confirms Google Workspace SMTP Relay is configured correctly on Render.</p>
       `
     });
 
