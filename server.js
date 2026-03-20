@@ -2,6 +2,7 @@ import express from "express";
 import Razorpay from "razorpay";
 import cors from "cors";
 import crypto from "crypto";
+import nodemailer from "nodemailer";
 
 const app = express();
 
@@ -15,64 +16,55 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
+// ================= GMAIL SETUP =================
+const mailTransporter = nodemailer.createTransport({
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD
+  }
+});
+
 // ================= TEST ROUTE =================
 app.get("/", (req, res) => {
   res.send("Razorpay Backend Running 🚀");
 });
 
 // ================= DEBUG ROUTE =================
-app.get("/debug-brevo-key", (req, res) => {
-  const key = process.env.BREVO_API_KEY || "";
+app.get("/debug-gmail", (req, res) => {
+  const user = process.env.GMAIL_USER || "";
+  const pass = process.env.GMAIL_APP_PASSWORD || "";
+
   res.json({
-    hasKey: !!key,
-    keyPrefix: key ? key.substring(0, 10) : null,
-    keyLength: key.length,
-    mailFrom: process.env.MAIL_FROM || null
+    hasUser: !!user,
+    hasPass: !!pass,
+    user,
+    passLength: pass.length
   });
 });
 
 // ================= EMAIL TEST ROUTE =================
 app.get("/test-email", async (req, res) => {
   try {
-    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "api-key": process.env.BREVO_API_KEY,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        sender: {
-          name: "DesignTech VLSI",
-          email: "harsh.thakur@designtechvlsi.com"
-        },
-        to: [
-          {
-            email: "harsh.thakur@designtechvlsi.com",
-            name: "Harsh Raj Thakur"
-          }
-        ],
-        subject: "Test Email from DesignTech VLSI",
-        htmlContent: `
-          <h2>Test Email Working ✅</h2>
-          <p>This email confirms Brevo API is configured correctly on Render.</p>
-        `
-      })
+    await mailTransporter.verify();
+
+    const info = await mailTransporter.sendMail({
+      from: `"DesignTech VLSI" <${process.env.GMAIL_USER}>`,
+      to: process.env.GMAIL_USER,
+      subject: "Test Email from DesignTech VLSI",
+      html: `
+        <h2>Test Email Working ✅</h2>
+        <p>This email confirms Gmail SMTP is configured correctly on Render.</p>
+      `
     });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(500).json({
-        success: false,
-        error: data
-      });
-    }
 
     res.json({
       success: true,
       message: "Test email sent successfully",
-      data
+      messageId: info.messageId,
+      response: info.response
     });
   } catch (err) {
     console.error("TEST EMAIL ERROR:", err);
@@ -156,74 +148,51 @@ app.post("/send-invoice", async (req, res) => {
       });
     }
 
-    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "api-key": process.env.BREVO_API_KEY,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        sender: {
-          name: "DesignTech VLSI",
-          email: "harsh.thakur@designtechvlsi.com"
-        },
-        to: [
-          {
-            email: customerEmail,
-            name: customerName || "Student"
-          }
-        ],
-        subject: `Invoice ${invoiceNumber || ""} - DesignTech VLSI`,
-        htmlContent: `
-          <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #222;">
-            <h2>DesignTech VLSI Invoice</h2>
-            <p>Dear ${customerName || "Student"},</p>
-            <p>Thank you for your payment. Your invoice details are below:</p>
+    await mailTransporter.verify();
 
-            <table style="border-collapse: collapse; width: 100%; max-width: 600px;">
-              <tr>
-                <td style="border: 1px solid #ddd; padding: 8px;"><strong>Invoice Number</strong></td>
-                <td style="border: 1px solid #ddd; padding: 8px;">${invoiceNumber || "-"}</td>
-              </tr>
-              <tr>
-                <td style="border: 1px solid #ddd; padding: 8px;"><strong>Course</strong></td>
-                <td style="border: 1px solid #ddd; padding: 8px;">${courseName || "-"}</td>
-              </tr>
-              <tr>
-                <td style="border: 1px solid #ddd; padding: 8px;"><strong>Amount</strong></td>
-                <td style="border: 1px solid #ddd; padding: 8px;">₹${amount || "-"}</td>
-              </tr>
-              <tr>
-                <td style="border: 1px solid #ddd; padding: 8px;"><strong>Payment ID</strong></td>
-                <td style="border: 1px solid #ddd; padding: 8px;">${paymentId || "-"}</td>
-              </tr>
-            </table>
+    const info = await mailTransporter.sendMail({
+      from: `"DesignTech VLSI" <${process.env.GMAIL_USER}>`,
+      to: customerEmail,
+      subject: `Invoice ${invoiceNumber || ""} - DesignTech VLSI`,
+      html: `
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #222;">
+          <h2>DesignTech VLSI Invoice</h2>
+          <p>Dear ${customerName || "Student"},</p>
+          <p>Thank you for your payment. Your invoice details are below:</p>
 
-            <p style="margin-top: 20px;">
-              Regards,<br>
-              <strong>DesignTech VLSI</strong><br>
-              Email: harsh.thakur@designtechvlsi.com
-            </p>
-          </div>
-        `
-      })
+          <table style="border-collapse: collapse; width: 100%; max-width: 600px;">
+            <tr>
+              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Invoice Number</strong></td>
+              <td style="border: 1px solid #ddd; padding: 8px;">${invoiceNumber || "-"}</td>
+            </tr>
+            <tr>
+              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Course</strong></td>
+              <td style="border: 1px solid #ddd; padding: 8px;">${courseName || "-"}</td>
+            </tr>
+            <tr>
+              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Amount</strong></td>
+              <td style="border: 1px solid #ddd; padding: 8px;">₹${amount || "-"}</td>
+            </tr>
+            <tr>
+              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Payment ID</strong></td>
+              <td style="border: 1px solid #ddd; padding: 8px;">${paymentId || "-"}</td>
+            </tr>
+          </table>
+
+          <p style="margin-top: 20px;">
+            Regards,<br>
+            <strong>DesignTech VLSI</strong><br>
+            Email: ${process.env.GMAIL_USER}
+          </p>
+        </div>
+      `
     });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to send invoice email",
-        error: data
-      });
-    }
 
     res.json({
       success: true,
       message: "Invoice email sent successfully",
-      data
+      messageId: info.messageId,
+      response: info.response
     });
   } catch (err) {
     console.error("SEND INVOICE ERROR:", err);
