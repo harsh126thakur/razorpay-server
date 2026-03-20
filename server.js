@@ -2,7 +2,6 @@ import express from "express";
 import Razorpay from "razorpay";
 import cors from "cors";
 import crypto from "crypto";
-import nodemailer from "nodemailer";
 
 const app = express();
 
@@ -16,17 +15,6 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// ================= EMAIL SETUP =================
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT),
-  secure: Number(process.env.SMTP_PORT) === 465,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS
-  }
-});
-
 // ================= TEST ROUTE =================
 app.get("/", (req, res) => {
   res.send("Razorpay Backend Running 🚀");
@@ -35,17 +23,46 @@ app.get("/", (req, res) => {
 // ================= EMAIL TEST ROUTE =================
 app.get("/test-email", async (req, res) => {
   try {
-    await transporter.sendMail({
-      from: process.env.MAIL_FROM,
-      to: process.env.SMTP_USER,
-      subject: "Test Email from DesignTech VLSI",
-      html: `
-        <h2>Test Email Working ✅</h2>
-        <p>This email confirms SMTP is configured correctly on Render.</p>
-      `
+    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "api-key": process.env.BREVO_API_KEY,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        sender: {
+          name: "DesignTech VLSI",
+          email: "harsh.thakur@designtechvlsi.com"
+        },
+        to: [
+          {
+            email: "harsh.thakur@designtechvlsi.com",
+            name: "Harsh Raj Thakur"
+          }
+        ],
+        subject: "Test Email from DesignTech VLSI",
+        htmlContent: `
+          <h2>Test Email Working ✅</h2>
+          <p>This email confirms Brevo API is configured correctly on Render.</p>
+        `
+      })
     });
 
-    res.json({ success: true, message: "Test email sent successfully" });
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(500).json({
+        success: false,
+        error: data
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Test email sent successfully",
+      data
+    });
   } catch (err) {
     console.error("TEST EMAIL ERROR:", err);
     res.status(500).json({
@@ -71,7 +88,6 @@ app.post("/create-order", async (req, res) => {
     };
 
     const order = await razorpay.orders.create(options);
-
     res.json(order);
   } catch (err) {
     console.error("CREATE ORDER ERROR:", err);
@@ -129,47 +145,74 @@ app.post("/send-invoice", async (req, res) => {
       });
     }
 
-    await transporter.sendMail({
-      from: process.env.MAIL_FROM,
-      to: customerEmail,
-      subject: `Invoice ${invoiceNumber || ""} - DesignTech VLSI`,
-      html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #222;">
-          <h2>DesignTech VLSI Invoice</h2>
-          <p>Dear ${customerName || "Student"},</p>
-          <p>Thank you for your payment. Your invoice details are below:</p>
+    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "api-key": process.env.BREVO_API_KEY,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        sender: {
+          name: "DesignTech VLSI",
+          email: "harsh.thakur@designtechvlsi.com"
+        },
+        to: [
+          {
+            email: customerEmail,
+            name: customerName || "Student"
+          }
+        ],
+        subject: `Invoice ${invoiceNumber || ""} - DesignTech VLSI`,
+        htmlContent: `
+          <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #222;">
+            <h2>DesignTech VLSI Invoice</h2>
+            <p>Dear ${customerName || "Student"},</p>
+            <p>Thank you for your payment. Your invoice details are below:</p>
 
-          <table style="border-collapse: collapse; width: 100%; max-width: 600px;">
-            <tr>
-              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Invoice Number</strong></td>
-              <td style="border: 1px solid #ddd; padding: 8px;">${invoiceNumber || "-"}</td>
-            </tr>
-            <tr>
-              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Course</strong></td>
-              <td style="border: 1px solid #ddd; padding: 8px;">${courseName || "-"}</td>
-            </tr>
-            <tr>
-              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Amount</strong></td>
-              <td style="border: 1px solid #ddd; padding: 8px;">₹${amount || "-"}</td>
-            </tr>
-            <tr>
-              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Payment ID</strong></td>
-              <td style="border: 1px solid #ddd; padding: 8px;">${paymentId || "-"}</td>
-            </tr>
-          </table>
+            <table style="border-collapse: collapse; width: 100%; max-width: 600px;">
+              <tr>
+                <td style="border: 1px solid #ddd; padding: 8px;"><strong>Invoice Number</strong></td>
+                <td style="border: 1px solid #ddd; padding: 8px;">${invoiceNumber || "-"}</td>
+              </tr>
+              <tr>
+                <td style="border: 1px solid #ddd; padding: 8px;"><strong>Course</strong></td>
+                <td style="border: 1px solid #ddd; padding: 8px;">${courseName || "-"}</td>
+              </tr>
+              <tr>
+                <td style="border: 1px solid #ddd; padding: 8px;"><strong>Amount</strong></td>
+                <td style="border: 1px solid #ddd; padding: 8px;">₹${amount || "-"}</td>
+              </tr>
+              <tr>
+                <td style="border: 1px solid #ddd; padding: 8px;"><strong>Payment ID</strong></td>
+                <td style="border: 1px solid #ddd; padding: 8px;">${paymentId || "-"}</td>
+              </tr>
+            </table>
 
-          <p style="margin-top: 20px;">
-            Regards,<br>
-            <strong>DesignTech VLSI</strong><br>
-            Email: harsh.thakur@designtechvlsi.com
-          </p>
-        </div>
-      `
+            <p style="margin-top: 20px;">
+              Regards,<br>
+              <strong>DesignTech VLSI</strong><br>
+              Email: harsh.thakur@designtechvlsi.com
+            </p>
+          </div>
+        `
+      })
     });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to send invoice email",
+        error: data
+      });
+    }
 
     res.json({
       success: true,
-      message: "Invoice email sent successfully"
+      message: "Invoice email sent successfully",
+      data
     });
   } catch (err) {
     console.error("SEND INVOICE ERROR:", err);
