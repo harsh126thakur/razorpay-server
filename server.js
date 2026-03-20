@@ -19,17 +19,26 @@ const razorpay = new Razorpay({
 // ================= GMAIL SETUP =================
 const mailTransporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
+  port: 587,
+  secure: false,
   auth: {
     user: process.env.GMAIL_USER,
     pass: process.env.GMAIL_APP_PASSWORD
-  }
+  },
+  connectionTimeout: 20000,
+  greetingTimeout: 20000,
+  socketTimeout: 30000,
+  requireTLS: true
 });
 
 // ================= TEST ROUTE =================
 app.get("/", (req, res) => {
   res.send("Razorpay Backend Running 🚀");
+});
+
+// ================= PING ROUTE =================
+app.get("/ping", (req, res) => {
+  res.json({ ok: true, message: "Server is live" });
 });
 
 // ================= DEBUG ROUTE =================
@@ -70,7 +79,9 @@ app.get("/test-email", async (req, res) => {
     console.error("TEST EMAIL ERROR:", err);
     res.status(500).json({
       success: false,
-      error: err.message
+      error: err.message,
+      code: err.code || null,
+      command: err.command || null
     });
   }
 });
@@ -108,7 +119,10 @@ app.post("/verify-payment", (req, res) => {
     } = req.body;
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-      return res.status(400).json({ success: false, message: "Missing fields" });
+      return res.status(400).json({
+        success: false,
+        message: "Missing fields"
+      });
     }
 
     const body = razorpay_order_id + "|" + razorpay_payment_id;
@@ -199,7 +213,9 @@ app.post("/send-invoice", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Failed to send invoice email",
-      error: err.message
+      error: err.message,
+      code: err.code || null,
+      command: err.command || null
     });
   }
 });
