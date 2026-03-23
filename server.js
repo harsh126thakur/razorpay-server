@@ -2,12 +2,11 @@ import express from "express";
 import Razorpay from "razorpay";
 import cors from "cors";
 import crypto from "crypto";
-import nodemailer from "nodemailer";
 
 const app = express();
 
 // ================= MIDDLEWARE =================
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "25mb" }));
 app.use(cors());
 
 // ================= RAZORPAY SETUP =================
@@ -16,24 +15,95 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// ================= GOOGLE WORKSPACE SMTP RELAY =================
-const mailTransporter = nodemailer.createTransport({
-  host: "smtp-relay.gmail.com",
-  port: 587,
-  secure: false,
-  requireTLS: true,
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD
-  },
-  connectionTimeout: 20000,
-  greetingTimeout: 20000,
-  socketTimeout: 30000
-});
+// ================= GITHUB CONFIG =================
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_OWNER = process.env.GITHUB_OWNER || "harsh126thakur";
+const GITHUB_REPO = process.env.GITHUB_REPO || "designtechvlsi";
+const GITHUB_BRANCH = process.env.GITHUB_BRANCH || "main";
+const GITHUB_MEDIA_BASE_PATH = process.env.GITHUB_MEDIA_BASE_PATH || "question-library";
+
+function sanitizeFolderName(name = "") {
+  return String(name)
+    .trim()
+    .replace(/[^a-zA-Z0-9-_ ]/g, "")
+    .replace(/\s+/g, "-");
+}
+
+function sanitizeFileName(name = "") {
+  return String(name)
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "-");
+}
+
+function getGithubApiUrl(path) {
+  return `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${path}`;
+}
+
+function getRawFileUrl(path) {
+  return `https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/${GITHUB_BRANCH}/${path}`;
+}
+
+async function githubRequest(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${GITHUB_TOKEN}`,
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(options.headers || {})
+    }
+  });
+
+  const text = await response.text();
+  let data = {};
+
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
+  }
+
+  if (!response.ok) {
+    throw new Error(data.message || `GitHub API error: ${response.status}`);
+  }
+
+  return data;
+}
+
+async function createOrUpdateGithubFile(path, contentBase64, message) {
+  const url = getGithubApiUrl(path);
+  let sha = null;
+
+  try {
+    const existing = await githubRequest(url, { method: "GET" });
+    sha = existing.sha || null;
+  } catch (error) {
+    const msg = String(error.message || "").toLowerCase();
+    if (!msg.includes("not found")) {
+      sha = null;
+    }
+  }
+
+  const body = {
+    message,
+    content: contentBase64,
+    branch: GITHUB_BRANCH
+  };
+
+  if (sha) {
+    body.sha = sha;
+  }
+
+  return githubRequest(url, {
+    method: "PUT",
+    body: JSON.stringify(body)
+  });
+}
 
 // ================= TEST ROUTE =================
 app.get("/", (req, res) => {
-  res.send("Razorpay Backend Running 🚀");
+  res.send("Razorpay Backend + GitHub Media API Running 🚀");
 });
 
 // ================= PING ROUTE =================
@@ -41,49 +111,15 @@ app.get("/ping", (req, res) => {
   res.json({ ok: true, message: "Server is live" });
 });
 
-// ================= DEBUG ROUTE =================
-app.get("/debug-gmail", (req, res) => {
-  const user = process.env.GMAIL_USER || "";
-  const pass = process.env.GMAIL_APP_PASSWORD || "";
-
+// ================= DEBUG GITHUB ROUTE =================
+app.get("/debug-github", (req, res) => {
   res.json({
-    hasUser: !!user,
-    hasPass: !!pass,
-    user,
-    passLength: pass.length
+    hasGithubToken: !!GITHUB_TOKEN,
+    githubOwner: GITHUB_OWNER,
+    githubRepo: GITHUB_REPO,
+    githubBranch: GITHUB_BRANCH,
+    githubMediaBasePath: GITHUB_MEDIA_BASE_PATH
   });
-});
-
-// ================= EMAIL TEST ROUTE =================
-app.get("/test-email", async (req, res) => {
-  try {
-    await mailTransporter.verify();
-
-    const info = await mailTransporter.sendMail({
-      from: `"DesignTech VLSI" <${process.env.GMAIL_USER}>`,
-      to: process.env.GMAIL_USER,
-      subject: "Test Email from DesignTech VLSI",
-      html: `
-        <h2>Test Email Working ✅</h2>
-        <p>This email confirms Google Workspace SMTP Relay is configured correctly on Render.</p>
-      `
-    });
-
-    res.json({
-      success: true,
-      message: "Test email sent successfully",
-      messageId: info.messageId,
-      response: info.response
-    });
-  } catch (err) {
-    console.error("TEST EMAIL ERROR:", err);
-    res.status(500).json({
-      success: false,
-      error: err.message,
-      code: err.code || null,
-      command: err.command || null
-    });
-  }
 });
 
 // ================= CREATE ORDER =================
@@ -143,79 +179,106 @@ app.post("/verify-payment", (req, res) => {
   }
 });
 
-// ================= SEND INVOICE EMAIL =================
-app.post("/send-invoice", async (req, res) => {
+// ================= GITHUB CREATE FOLDER =================
+app.post("/api/github/create-folder", async (req, res) => {
   try {
-    const {
-      customerEmail,
-      customerName,
-      invoiceNumber,
-      amount,
-      courseName,
-      paymentId
-    } = req.body;
-
-    if (!customerEmail) {
-      return res.status(400).json({
+    if (!GITHUB_TOKEN) {
+      return res.status(500).json({
         success: false,
-        message: "Customer email is required"
+        message: "GitHub token is missing in server environment"
       });
     }
 
-    await mailTransporter.verify();
+    const { folderName } = req.body;
+    const safeFolderName = sanitizeFolderName(folderName);
 
-    const info = await mailTransporter.sendMail({
-      from: `"DesignTech VLSI" <${process.env.GMAIL_USER}>`,
-      to: customerEmail,
-      subject: `Invoice ${invoiceNumber || ""} - DesignTech VLSI`,
-      html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #222;">
-          <h2>DesignTech VLSI Invoice</h2>
-          <p>Dear ${customerName || "Student"},</p>
-          <p>Thank you for your payment. Your invoice details are below:</p>
+    if (!safeFolderName) {
+      return res.status(400).json({
+        success: false,
+        message: "Valid folder name is required"
+      });
+    }
 
-          <table style="border-collapse: collapse; width: 100%; max-width: 600px;">
-            <tr>
-              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Invoice Number</strong></td>
-              <td style="border: 1px solid #ddd; padding: 8px;">${invoiceNumber || "-"}</td>
-            </tr>
-            <tr>
-              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Course</strong></td>
-              <td style="border: 1px solid #ddd; padding: 8px;">${courseName || "-"}</td>
-            </tr>
-            <tr>
-              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Amount</strong></td>
-              <td style="border: 1px solid #ddd; padding: 8px;">₹${amount || "-"}</td>
-            </tr>
-            <tr>
-              <td style="border: 1px solid #ddd; padding: 8px;"><strong>Payment ID</strong></td>
-              <td style="border: 1px solid #ddd; padding: 8px;">${paymentId || "-"}</td>
-            </tr>
-          </table>
+    const folderPath = `${GITHUB_MEDIA_BASE_PATH}/${safeFolderName}`;
+    const keepFilePath = `${folderPath}/.gitkeep`;
+    const emptyContentBase64 = Buffer.from("").toString("base64");
 
-          <p style="margin-top: 20px;">
-            Regards,<br>
-            <strong>DesignTech VLSI</strong><br>
-            Email: ${process.env.GMAIL_USER}
-          </p>
-        </div>
-      `
-    });
+    await createOrUpdateGithubFile(
+      keepFilePath,
+      emptyContentBase64,
+      `Create media folder ${safeFolderName}`
+    );
 
-    res.json({
+    return res.json({
       success: true,
-      message: "Invoice email sent successfully",
-      messageId: info.messageId,
-      response: info.response
+      message: "Folder created successfully",
+      folderName: safeFolderName,
+      githubPath: folderPath,
+      keepFilePath,
+      folderUrl: `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/tree/${GITHUB_BRANCH}/${folderPath}`
     });
   } catch (err) {
-    console.error("SEND INVOICE ERROR:", err);
-    res.status(500).json({
+    console.error("CREATE FOLDER ERROR:", err);
+    return res.status(500).json({
       success: false,
-      message: "Failed to send invoice email",
-      error: err.message,
-      code: err.code || null,
-      command: err.command || null
+      message: "Failed to create folder on GitHub",
+      error: err.message
+    });
+  }
+});
+
+// ================= GITHUB UPLOAD IMAGE =================
+app.post("/api/github/upload-image", async (req, res) => {
+  try {
+    if (!GITHUB_TOKEN) {
+      return res.status(500).json({
+        success: false,
+        message: "GitHub token is missing in server environment"
+      });
+    }
+
+    const { folderName, fileName, fileBase64 } = req.body;
+
+    const safeFolderName = sanitizeFolderName(folderName);
+    const safeFileName = sanitizeFileName(fileName);
+
+    if (!safeFolderName || !safeFileName || !fileBase64) {
+      return res.status(400).json({
+        success: false,
+        message: "folderName, fileName and fileBase64 are required"
+      });
+    }
+
+    const cleanBase64 = String(fileBase64).includes(",")
+      ? String(fileBase64).split(",")[1]
+      : String(fileBase64);
+
+    const filePath = `${GITHUB_MEDIA_BASE_PATH}/${safeFolderName}/${safeFileName}`;
+
+    await createOrUpdateGithubFile(
+      filePath,
+      cleanBase64,
+      `Upload media ${safeFileName} to ${safeFolderName}`
+    );
+
+    const rawUrl = getRawFileUrl(filePath);
+    const githubFileUrl = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/blob/${GITHUB_BRANCH}/${filePath}`;
+
+    return res.json({
+      success: true,
+      message: "Image uploaded successfully",
+      folderName: safeFolderName,
+      fileName: safeFileName,
+      githubPath: filePath,
+      rawUrl,
+      githubFileUrl
+    });
+  } catch (err) {
+    console.error("UPLOAD IMAGE ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to upload image to GitHub",
+      error: err.message
     });
   }
 });
