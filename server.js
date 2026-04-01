@@ -2,14 +2,20 @@ import express from "express";
 import Razorpay from "razorpay";
 import cors from "cors";
 import crypto from "crypto";
+import admin from "firebase-admin";
 
+// ================= INIT =================
 const app = express();
-
-// ================= MIDDLEWARE =================
 app.use(express.json({ limit: "25mb" }));
 app.use(cors());
 
-// ================= RAZORPAY SETUP =================
+// ================= FIREBASE ADMIN =================
+admin.initializeApp({
+  credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_KEY))
+});
+const db = admin.firestore();
+
+// ================= RAZORPAY =================
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
   key_secret: process.env.RAZORPAY_KEY_SECRET
@@ -20,8 +26,10 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_OWNER = process.env.GITHUB_OWNER || "harsh126thakur";
 const GITHUB_REPO = process.env.GITHUB_REPO || "designtechvlsi";
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || "main";
-const GITHUB_MEDIA_BASE_PATH = process.env.GITHUB_MEDIA_BASE_PATH || "question-library";
+const GITHUB_MEDIA_BASE_PATH =
+  process.env.GITHUB_MEDIA_BASE_PATH || "question-library";
 
+// ================= HELPERS =================
 function sanitizeFolderName(name = "") {
   return String(name)
     .trim()
@@ -78,12 +86,7 @@ async function createOrUpdateGithubFile(path, contentBase64, message) {
   try {
     const existing = await githubRequest(url, { method: "GET" });
     sha = existing.sha || null;
-  } catch (error) {
-    const msg = String(error.message || "").toLowerCase();
-    if (!msg.includes("not found")) {
-      sha = null;
-    }
-  }
+  } catch {}
 
   const body = {
     message,
@@ -91,9 +94,7 @@ async function createOrUpdateGithubFile(path, contentBase64, message) {
     branch: GITHUB_BRANCH
   };
 
-  if (sha) {
-    body.sha = sha;
-  }
+  if (sha) body.sha = sha;
 
   return githubRequest(url, {
     method: "PUT",
@@ -101,44 +102,72 @@ async function createOrUpdateGithubFile(path, contentBase64, message) {
   });
 }
 
-// ================= TEST ROUTE =================
+// ================= DB HELPERS =================
+async function getCourseFromDB(courseId) {
+  const docSnap = await db.collection("courses").doc(courseId).get();
+  return docSnap.exists ? docSnap.data() : null;
+}
+
+async function getCouponFromDB(code) {
+  const docSnap = await db.collection("coupons").doc(code).get();
+  return docSnap.exists ? docSnap.data() : null;
+}
+
+// ================= ROUTES =================
 app.get("/", (req, res) => {
-  res.send("Razorpay Backend + GitHub Media API Running 🚀");
+  res.send("Secure Razorpay + GitHub Backend Running 🚀");
 });
 
-// ================= PING ROUTE =================
 app.get("/ping", (req, res) => {
-  res.json({ ok: true, message: "Server is live" });
+  res.json({ ok: true });
 });
 
-// ================= DEBUG GITHUB ROUTE =================
-app.get("/debug-github", (req, res) => {
-  res.json({
-    hasGithubToken: !!GITHUB_TOKEN,
-    githubOwner: GITHUB_OWNER,
-    githubRepo: GITHUB_REPO,
-    githubBranch: GITHUB_BRANCH,
-    githubMediaBasePath: GITHUB_MEDIA_BASE_PATH
-  });
-});
-
-// ================= CREATE ORDER =================
+// ================= 🔐 SECURE CREATE ORDER =================
 app.post("/create-order", async (req, res) => {
   try {
-    const { amount } = req.body;
+    const { courseId, couponCode } = req.body;
 
-    if (!amount) {
-      return res.status(400).json({ error: "Amount is required" });
+    if (!courseId) {
+      return res.status(400).json({ error: "Course ID is required" });
     }
 
-    const options = {
-      amount: amount * 100,
+    const course = await getCourseFromDB(courseId);
+
+    if (!course) {
+      return res.status(404).json({ error: "Course not found" });
+    }
+
+    let price = Number(course.price);
+
+    if (!price || price <= 0) {
+      return res.status(400).json({ error: "Invalid course price" });
+    }
+
+    // Apply coupon
+    if (couponCode) {
+      const coupon = await getCouponFromDB(couponCode);
+
+      if (coupon && coupon.isActive) {
+        const discount = Number(coupon.discount || 0);
+        price = price - (price * discount / 100);
+      }
+    }
+
+    if (price < 10) price = 10;
+
+    const finalAmount = Math.round(price * 100);
+
+    const order = await razorpay.orders.create({
+      amount: finalAmount,
       currency: "INR",
       receipt: "receipt_" + Date.now()
-    };
+    });
 
-    const order = await razorpay.orders.create(options);
-    res.json(order);
+    res.json({
+      id: order.id,
+      amount: order.amount
+    });
+
   } catch (err) {
     console.error("CREATE ORDER ERROR:", err);
     res.status(500).json({ error: "Order creation failed" });
@@ -154,13 +183,6 @@ app.post("/verify-payment", (req, res) => {
       razorpay_signature
     } = req.body;
 
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing fields"
-      });
-    }
-
     const body = razorpay_order_id + "|" + razorpay_payment_id;
 
     const expectedSignature = crypto
@@ -170,120 +192,63 @@ app.post("/verify-payment", (req, res) => {
 
     if (expectedSignature === razorpay_signature) {
       return res.json({ success: true });
-    } else {
-      return res.status(400).json({ success: false });
     }
+
+    return res.status(400).json({ success: false });
+
   } catch (err) {
-    console.error("VERIFY ERROR:", err);
     res.status(500).json({ success: false });
   }
 });
 
-// ================= GITHUB CREATE FOLDER =================
+// ================= GITHUB FOLDER =================
 app.post("/api/github/create-folder", async (req, res) => {
   try {
-    if (!GITHUB_TOKEN) {
-      return res.status(500).json({
-        success: false,
-        message: "GitHub token is missing in server environment"
-      });
-    }
-
     const { folderName } = req.body;
     const safeFolderName = sanitizeFolderName(folderName);
 
-    if (!safeFolderName) {
-      return res.status(400).json({
-        success: false,
-        message: "Valid folder name is required"
-      });
-    }
-
-    const folderPath = `${GITHUB_MEDIA_BASE_PATH}/${safeFolderName}`;
-    const keepFilePath = `${folderPath}/.gitkeep`;
-    const emptyContentBase64 = Buffer.from("").toString("base64");
+    const path = `${GITHUB_MEDIA_BASE_PATH}/${safeFolderName}/.gitkeep`;
 
     await createOrUpdateGithubFile(
-      keepFilePath,
-      emptyContentBase64,
-      `Create media folder ${safeFolderName}`
+      path,
+      Buffer.from("").toString("base64"),
+      "Create folder"
     );
 
-    return res.json({
-      success: true,
-      message: "Folder created successfully",
-      folderName: safeFolderName,
-      githubPath: folderPath,
-      keepFilePath,
-      folderUrl: `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/tree/${GITHUB_BRANCH}/${folderPath}`
-    });
+    res.json({ success: true });
+
   } catch (err) {
-    console.error("CREATE FOLDER ERROR:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to create folder on GitHub",
-      error: err.message
-    });
+    res.status(500).json({ success: false });
   }
 });
 
-// ================= GITHUB UPLOAD IMAGE =================
+// ================= GITHUB IMAGE =================
 app.post("/api/github/upload-image", async (req, res) => {
   try {
-    if (!GITHUB_TOKEN) {
-      return res.status(500).json({
-        success: false,
-        message: "GitHub token is missing in server environment"
-      });
-    }
-
     const { folderName, fileName, fileBase64 } = req.body;
 
-    const safeFolderName = sanitizeFolderName(folderName);
-    const safeFileName = sanitizeFileName(fileName);
+    const safeFolder = sanitizeFolderName(folderName);
+    const safeFile = sanitizeFileName(fileName);
 
-    if (!safeFolderName || !safeFileName || !fileBase64) {
-      return res.status(400).json({
-        success: false,
-        message: "folderName, fileName and fileBase64 are required"
-      });
-    }
+    const cleanBase64 = fileBase64.includes(",")
+      ? fileBase64.split(",")[1]
+      : fileBase64;
 
-    const cleanBase64 = String(fileBase64).includes(",")
-      ? String(fileBase64).split(",")[1]
-      : String(fileBase64);
+    const path = `${GITHUB_MEDIA_BASE_PATH}/${safeFolder}/${safeFile}`;
 
-    const filePath = `${GITHUB_MEDIA_BASE_PATH}/${safeFolderName}/${safeFileName}`;
+    await createOrUpdateGithubFile(path, cleanBase64, "Upload image");
 
-    await createOrUpdateGithubFile(
-      filePath,
-      cleanBase64,
-      `Upload media ${safeFileName} to ${safeFolderName}`
-    );
-
-    const rawUrl = getRawFileUrl(filePath);
-    const githubFileUrl = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/blob/${GITHUB_BRANCH}/${filePath}`;
-
-    return res.json({
+    res.json({
       success: true,
-      message: "Image uploaded successfully",
-      folderName: safeFolderName,
-      fileName: safeFileName,
-      githubPath: filePath,
-      rawUrl,
-      githubFileUrl
+      url: getRawFileUrl(path)
     });
+
   } catch (err) {
-    console.error("UPLOAD IMAGE ERROR:", err);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to upload image to GitHub",
-      error: err.message
-    });
+    res.status(500).json({ success: false });
   }
 });
 
-// ================= START SERVER =================
+// ================= START =================
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
