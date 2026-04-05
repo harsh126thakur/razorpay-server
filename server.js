@@ -170,8 +170,16 @@ app.post("/create-order", async (req, res) => {
       const coupon = await getCouponFromDB(couponCode);
 
       if (coupon && coupon.isActive) {
-        const discount = Number(coupon.discount || 0);
-        price = price - (price * discount / 100);
+        let discount = 0;
+
+if (coupon.discountType === "percent") {
+  discount = Number(coupon.discountValue || 0);
+  price = price - (price * discount / 100);
+} 
+else if (coupon.discountType === "flat") {
+  discount = Number(coupon.discountValue || 0);
+  price = price - discount;
+}
       }
     }
 
