@@ -122,28 +122,50 @@ app.get("/ping", (req, res) => {
   res.json({ ok: true });
 });
 
-// ================= 🔐 SECURE CREATE ORDER =================
+// ================= 🔥 FIXED CREATE ORDER =================
 app.post("/create-order", async (req, res) => {
   try {
-    const { courseId, couponCode } = req.body;
+    const { courseId, type, couponCode } = req.body;
 
-    if (!courseId) {
-      return res.status(400).json({ error: "Course ID is required" });
+    let price = 0;
+
+    // ================= COURSE =================
+    if (courseId) {
+      const course = await getCourseFromDB(courseId);
+
+      if (!course) {
+        return res.status(404).json({ error: "Course not found" });
+      }
+
+      price = Number(course.price);
+
+      if (!price || price <= 0) {
+        return res.status(400).json({ error: "Invalid course price" });
+      }
     }
 
-    const course = await getCourseFromDB(courseId);
+    // ================= MENTORSHIP =================
+    else if (type) {
+      const normalizedType = type.toLowerCase().trim();
 
-    if (!course) {
-      return res.status(404).json({ error: "Course not found" });
+      if (normalizedType.includes("cv")) price = 499;
+      else if (normalizedType.includes("internship")) price = 999;
+      else if (normalizedType.includes("gate")) price = 1499;
+      else if (normalizedType.includes("post")) price = 1499;
+      else if (normalizedType.includes("interview")) price = 1499;
+      else if (normalizedType.includes("vlsi")) price = 1999;
+      else if (normalizedType.includes("phd")) price = 2499;
+      else {
+        return res.status(400).json({ error: "Invalid mentorship type" });
+      }
     }
 
-    let price = Number(course.price);
-
-    if (!price || price <= 0) {
-      return res.status(400).json({ error: "Invalid course price" });
+    // ================= INVALID =================
+    else {
+      return res.status(400).json({ error: "Invalid request" });
     }
 
-    // Apply coupon
+    // ================= COUPON =================
     if (couponCode) {
       const coupon = await getCouponFromDB(couponCode);
 
